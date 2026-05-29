@@ -1,0 +1,6 @@
+node_modules
+media
+logs
+credentials.json
+*.log
+.env
