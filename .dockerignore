@@ -1,0 +1,9 @@
+server/node_modules
+server/media
+server/logs
+server/.env
+server/credentials.json
+netlify-site
+*.zip
+.DS_Store
+.git

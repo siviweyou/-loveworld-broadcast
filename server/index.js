@@ -11,7 +11,7 @@
  */
 
 const NodeMediaServer = require('node-media-server');
-const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+const ffmpegPath = process.env.FFMPEG_PATH || require('@ffmpeg-installer/ffmpeg').path;
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');

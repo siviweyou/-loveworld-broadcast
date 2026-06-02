@@ -1,2 +1,4 @@
-// Local development keeps the default localhost API from js/config.js.
-// Production can override this file or inject window.LW_BROADCAST_SERVER_URL.
+// Netlify/Railway production:
+// window.LW_BROADCAST_SERVER_URL = 'https://your-railway-domain.up.railway.app';
+// window.LW_PUBLIC_RTMP_URL = 'rtmp://your-railway-tcp-proxy-domain:PORT/live';
+// window.LW_PUBLIC_HLS_BASE = 'https://your-railway-domain.up.railway.app/live';
