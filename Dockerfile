@@ -14,6 +14,12 @@ WORKDIR /app/server
 
 ENV NODE_ENV=production
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV SERVER_HOST=0.0.0.0
+ENV PUBLIC_HOST=streaming-server-production-d33c.up.railway.app
+ENV PUBLIC_SCHEME=https
+ENV PUBLIC_HLS_BASE=https://streaming-server-production-d33c.up.railway.app/live
+ENV PUBLIC_RTMP_URL=rtmp://turntable.proxy.rlwy.net:35297/live
+ENV STREAM_PROVIDER=platform
 
 EXPOSE 1935
 EXPOSE 8000
