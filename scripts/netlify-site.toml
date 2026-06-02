@@ -1,6 +1,5 @@
-# Netlify (Git deploy) — publishes pre-built netlify-site/ (no build step needed)
-[build]
-  publish = "netlify-site"
+# Used INSIDE netlify-site/ for drag-and-drop deploy only.
+# Do NOT set publish = "netlify-site" here — files are already at the upload root.
 
 [[headers]]
   for = "/*"
@@ -9,7 +8,6 @@
     X-Frame-Options = "SAMEORIGIN"
     Referrer-Policy = "strict-origin-when-cross-origin"
 
-# SPA: all routes serve the main app
 [[redirects]]
   from = "/*"
   to = "/index.html"

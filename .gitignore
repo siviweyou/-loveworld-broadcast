@@ -1,0 +1,25 @@
+# Dependencies (never commit — causes huge GitHub / Netlify failures)
+server/node_modules/
+node_modules/
+
+# Server runtime data
+server/.env
+server/credentials.json
+server/media/
+
+# Netlify zip for manual upload (regenerate with scripts/prepare-netlify-site.sh)
+Loveworld-Netlify-Upload.zip
+*.zip
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.kiro/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Optional large dev-only file (not used by the website)
+js/openapi.json
