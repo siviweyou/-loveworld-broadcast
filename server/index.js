@@ -2,8 +2,7 @@
  * LOVEWORLD NETWORKS — Broadcast Server
  *
  * Receives OBS/encoder streams over RTMP, serves HLS playback,
- * and provides REST API for stream credentials. 5centsCDN can sit in front
- * of the HLS output as the global CDN layer.
+ * and provides REST API for stream credentials.
  *
  * Usage:
  *   node index.js                    # Local mode (port 1935)
@@ -16,6 +15,7 @@ const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
+const url = require('url');
 
 function loadEnvFile(filePath) {
   try {
@@ -35,10 +35,25 @@ function loadEnvFile(filePath) {
 
 loadEnvFile(path.join(__dirname, '.env'));
 
+// ── Auto-detect Railway public URLs when env vars are missing ───────────────
+const PUBLIC_RTMP_RAW = process.env.PUBLIC_RTMP_URL
+  || process.env.RAILWAY_TCP_PROXY_DOMAIN
+  || process.env.RAILWAY_PUBLIC_DOMAIN
+  || '';
+const PUBLIC_HOST = process.env.PUBLIC_HOST
+  || (process.env.RAILWAY_PUBLIC_DOMAIN
+    ? process.env.RAILWAY_PUBLIC_DOMAIN.replace(/^https?:\/\//, '').split('/')[0]
+    : 'localhost');
+const PUBLIC_SCHEME = (process.env.PUBLIC_SCHEME || process.env.RAILWAY_PUBLIC_DOMAIN?.startsWith('https') ? 'https' : 'http');
+const inferredPublicHls = `${PUBLIC_SCHEME}://${PUBLIC_HOST}:${process.env.HTTP_PORT || '8001'}/live`;
+const PUBLIC_HLS_BASE = process.env.PUBLIC_HLS_BASE || inferredPublicHls;
+const MAYBE_MANUAL_PUSH_HLS_URL = process.env.MANUAL_PUSH_HLS_URL || '';
+const FALLBACK_PUBLIC_HLS_URL = MAYBE_MANUAL_PUSH_HLS_URL || PUBLIC_HLS_BASE;
+
 // ── Configuration ──────────────────────────────────────────────────────────
 const SERVER_HOST = process.env.SERVER_HOST || 'localhost';
 const RTMP_PORT = parseInt(process.env.RTMP_PORT || '1935', 10);
-const HTTP_PORT = parseInt(process.env.HTTP_PORT || '8000', 10);
+const HTTP_PORT = parseInt(process.env.HTTP_PORT || '8001', 10);
 const API_PORT = parseInt(process.env.API_PORT || '3001', 10);
 const STORAGE_ENABLED = process.env.STORAGE_ENABLED === 'true';
 const FIVECENTS_API_BASE = process.env.FIVECENTS_API_BASE || 'https://api.5centscdn.com/v2';
@@ -46,17 +61,20 @@ const FIVECENTS_API_KEY = process.env.FIVECENTS_API_KEY || '';
 const FIVECENTS_ACCOUNT_ID = process.env.FIVECENTS_ACCOUNT_ID || '10244';
 const FIVECENTS_API_PROFILE_ID = process.env.FIVECENTS_API_PROFILE_ID || '1151';
 const FIVECENTS_STREAM_SERVER = parseInt(process.env.FIVECENTS_STREAM_SERVER || '209', 10);
-const MANUAL_PUSH_RTMP_URL = process.env.MANUAL_PUSH_RTMP_URL || '';
+const MANUAL_PUSH_RTMP_URL = process.env.MANUAL_PUSH_RTMP_URL || PUBLIC_RTMP_RAW;
 const MANUAL_PUSH_STREAM_KEY = process.env.MANUAL_PUSH_STREAM_KEY || '';
-const MANUAL_PUSH_HLS_URL = process.env.MANUAL_PUSH_HLS_URL || '';
+const MANUAL_PUSH_HLS_URL = process.env.MANUAL_PUSH_HLS_URL || FALLBACK_PUBLIC_HLS_URL;
 const API_SECRET = process.env.API_SECRET || '';
 
-const RTMP_URL = `rtmp://${SERVER_HOST}${RTMP_PORT !== 1935 ? ':' + RTMP_PORT : ''}/live`;
-const HLS_BASE = `http://${SERVER_HOST}:${HTTP_PORT}/live`;
+const RTMP_URL = PUBLIC_RTMP_RAW || `rtmp://${SERVER_HOST}${RTMP_PORT !== 1935 ? ':' + RTMP_PORT : ''}/live`;
+const HTTP_BASE = `http://${SERVER_HOST}:${HTTP_PORT}`;
+const HLS_BASE = PUBLIC_RTMP_RAW
+  ? (MANUAL_PUSH_HLS_URL.replace(/\/[^/]+\/?$/, '') || HTTP_BASE)
+  : HTTP_BASE;
 
+let cdnStreams = new Map();
 const CDN_ENABLED = Boolean(FIVECENTS_API_KEY);
 const MANUAL_PUSH_ENABLED = Boolean(MANUAL_PUSH_RTMP_URL && MANUAL_PUSH_STREAM_KEY);
-let cdnStreams = new Map();
 
 const CREDS_FILE = path.join(__dirname, 'credentials.json');
 let credentials = {};
@@ -409,15 +427,33 @@ nms.on('donePublish', async (id, StreamPath) => {
 nms.on('prePlay', (id, StreamPath) => { const f = activeFeeds.get(StreamPath.split('/').pop()); if (f) f.viewers++; });
 nms.on('donePlay', (id, StreamPath) => { const f = activeFeeds.get(StreamPath.split('/').pop()); if (f && f.viewers > 0) f.viewers--; });
 
-// ── REST API ───────────────────────────────────────────────────────────────
+// ── REST API + Static HLS ─────────────────────────────────────────────
 const apiServer = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Secret');
-  res.setHeader('Content-Type', 'application/json');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  const url = new URL(req.url, 'http://localhost');
+  const reqUrl = new URL(req.url, 'http://localhost');
+
+  // Serve HLS static files through the API server (Railway single-port mode)
+  if (req.method === 'GET' && reqUrl.pathname.startsWith('/live/')) {
+    const relativePath = reqUrl.pathname.slice('/live/'.length);
+    const filePath = path.join(MEDIA_LIVE_DIR, relativePath);
+    const stream = fs.createReadStream(filePath);
+    stream.on('open', () => {
+      if (filePath.endsWith('.m3u8')) res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      else if (filePath.endsWith('.ts')) res.setHeader('Content-Type', 'video/mp2t');
+      else res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      stream.pipe(res);
+    });
+    stream.on('error', () => { res.writeHead(404); res.end(JSON.stringify({ error: 'HLS file not found' })); });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'application/json');
+  const url = reqUrl;
 
   // GET /api/status
   if (req.method === 'GET' && url.pathname === '/api/status') {
@@ -507,23 +543,37 @@ const apiServer = http.createServer((req, res) => {
       try {
         const { name, type = 'church', city = '' } = JSON.parse(body);
         if (!name?.trim()) { res.writeHead(400); res.end(JSON.stringify({ error: 'Name is required' })); return; }
+
+        const useManualPush = MANUAL_PUSH_ENABLED;
+        const useCdn = CDN_ENABLED && !useManualPush;
+
         let cdnCredential = null;
-        if (CDN_ENABLED) {
+        if (useManualPush) {
+          cdnCredential = {
+            cdnId: 'manual-push',
+            streamName: MANUAL_PUSH_STREAM_KEY,
+            rtmpUrl: MANUAL_PUSH_RTMP_URL,
+            streamKey: MANUAL_PUSH_STREAM_KEY,
+            playbackRtmp: `${MANUAL_PUSH_RTMP_URL}/${MANUAL_PUSH_STREAM_KEY}`,
+            hlsUrl: MANUAL_PUSH_HLS_URL || `${HLS_BASE}/${MANUAL_PUSH_STREAM_KEY}/index.m3u8`,
+            manual: true,
+          };
+        } else if (useCdn) {
           try {
             cdnCredential = await create5centsPushCredential(name.trim());
           } catch (error) {
             console.warn(`[5CENTS] Failed to create CDN credential for "${name.trim()}":`, error.message);
-            // Continue with local credential creation even if CDN fails
             cdnCredential = null;
           }
         }
+
         const streamKey = cdnCredential?.streamKey || generateStreamKey(name.trim());
         const cred = {
           id: `cred-${Date.now()}`, name: name.trim(), type, city, streamKey,
-          rtmpUrl: cdnCredential?.rtmpUrl || RTMP_URL,
+           rtmpUrl: cdnCredential?.rtmpUrl || (useManualPush ? MANUAL_PUSH_RTMP_URL : RTMP_URL),
           hlsUrl: cdnCredential?.hlsUrl || `${HLS_BASE}/${streamKey}/index.m3u8`,
           srtUrl: '',
-          provider: cdnCredential ? '5centsCDN' : 'local',
+          provider: cdnCredential?.manual ? 'railway' : (cdnCredential ? '5centsCDN' : 'local'),
           cdnId: cdnCredential?.cdnId || '',
           playbackRtmp: cdnCredential?.playbackRtmp || '',
           createdAt: new Date().toISOString(),
